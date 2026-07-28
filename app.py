@@ -37,7 +37,7 @@ st.markdown("""
         --accent-dim: #2e5b6b;
         --accent-warn: #ff5470;
         --accent-mid: #ffb84d;
-        --text-dim: #8fb8cc;
+        --text-dim: #a3c8db;
     }
     .stApp {
         background-color: var(--bg-deep);
@@ -120,6 +120,20 @@ st.markdown("""
     }
     .metric-value { font-family: 'Space Mono', monospace; font-size: 2.1rem; font-weight: 700; }
     .metric-label { font-family: 'JetBrains Mono', monospace; color: var(--text-dim); font-size: 0.75rem; text-transform: lowercase; letter-spacing: 0.05em; margin-top: 6px; }
+    /* ---- Reduced-motion safety net: several elements above use an entrance
+       animation that fades in from opacity:0. Many phones have "reduce
+       motion" enabled (accessibility or battery setting), which causes
+       browsers to skip CSS animations entirely -- leaving those elements
+       stuck at their near-invisible starting state instead of ever reaching
+       full opacity. This forces them fully visible in that case. ---- */
+    @media (prefers-reduced-motion: reduce) {
+        .main-title, .status-tag, .subtitle, .metric-card,
+        div[data-testid="stImage"], div[data-testid="stExpander"] {
+            animation: none !important;
+            opacity: 1 !important;
+            transform: none !important;
+        }
+    }
     /* ---- Metrics column: sized so the three cards fill roughly the same
        vertical space as the image columns beside them, spaced evenly ---- */
     .metrics-stack {
