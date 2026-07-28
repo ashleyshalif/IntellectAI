@@ -1,0 +1,87 @@
+﻿"""
+evaluate.py
+Standalone accuracy check for InspectIQ's trained PaDiM models.
+
+Extended version: tests whether smoothing the anomaly score map with a
+Gaussian filter (a standard PaDiM post-processing step) improves separation
+between good/normal images and each named defect type, at a few different
+smoothing strengths. Raw score maps are computed once per image and cached,
+then re-scored cheaply at each sigma (no need to re-run the CNN per sigma).
+
+Run from the project root:
+    python evaluate.py
+"""
+
+from pathlib import Path
+import numpy as np
+from PIL import Image
+import torch
+from scipy.ndimage import gaussian_filter
+
+from src.padim_core import FeatureExtractor, TRANSFORM, mahalanobis_score_map, load_stats
+
+DATA_ROOT = Path("data/mvtec")
+MODELS_ROOT = Path("models")
+CATEGORIES = ["bottle", "cable", "tile"]
+SIGMAS = [0, 1, 2, 4]
+IMG_EXTS = (".png", ".jpg", ".jpeg")
+
+
+def raw_score_map(path, extractor, mean, inv_cov, hw):
+    img = Image.open(path).convert("RGB")
+    x = TRANSFORM(img).unsqueeze(0)
+    with torch.no_grad():
+        emb = extractor(x).cpu().numpy()[0]
+    return mahalanobis_score_map(emb, mean, inv_cov, hw)
+
+
+def scored(score_map, sigma):
+    if sigma > 0:
+        score_map = gaussian_filter(score_map, sigma=sigma)
+    return float(score_map.max())
+
+
+def evaluate_category(category, extractor):
+    model_path = MODELS_ROOT / f"{category}_padim.pkl"
+    if not model_path.exists():
+        print(f"  [skip] no model found at {model_path}")
+        return
+
+    mean, inv_cov, hw = load_stats(str(model_path))
+    test_root = DATA_ROOT / category / "test"
+    if not test_root.exists():
+        print(f"  [skip] no test folder at {test_root}")
+        return
+    subfolders = sorted(p for p in test_root.iterdir() if p.is_dir())
+
+    cache = {}
+    for sub in subfolders:
+        imgs = [p for p in sorted(sub.glob("*")) if p.suffix.lower() in IMG_EXTS]
+        cache[sub.name] = [raw_score_map(p, extractor, mean, inv_cov, hw) for p in imgs]
+
+    print(f"\n=== {category.upper()} ===")
+    for sigma in SIGMAS:
+        print(f"\n  -- sigma={sigma} --")
+        good_maps = cache.get("good", [])
+        good_scores = np.array([scored(sm, sigma) for sm in good_maps])
+        if len(good_scores):
+            print(f"  good/                  n={len(good_scores):3d}  "
+                  f"mean={good_scores.mean():6.2f}  min={good_scores.min():6.2f}  max={good_scores.max():6.2f}")
+        for name, maps in cache.items():
+            if name == "good" or not maps:
+                continue
+            scores = np.array([scored(sm, sigma) for sm in maps])
+            gap = scores.mean() - (good_scores.mean() if len(good_scores) else 0)
+            print(f"  {name:<22} n={len(scores):3d}  "
+                  f"mean={scores.mean():6.2f}  min={scores.min():6.2f}  max={scores.max():6.2f}  "
+                  f"(gap vs good mean: {gap:+6.2f})")
+
+
+def main():
+    extractor = FeatureExtractor()
+    for category in CATEGORIES:
+        evaluate_category(category, extractor)
+
+
+if __name__ == "__main__":
+    main()

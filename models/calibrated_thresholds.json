@@ -1,0 +1,14 @@
+{
+  "bottle": {
+    "minor": 16.54,
+    "defect": 18.09
+  },
+  "cable": {
+    "minor": 15.32,
+    "defect": 15.33
+  },
+  "tile": {
+    "minor": 13.39,
+    "defect": 13.41
+  }
+}

@@ -1,0 +1,151 @@
+﻿"""
+padim_core.py
+Core PaDiM (Patch Distribution Modeling) engine.
+Shared by train.py (fitting) and app.py (inference).
+
+Dimensionality reduction: each category fits its own PCA (80 components)
+on its own training embeddings, instead of a fixed random 80-channel
+subset shared across every category.
+"""
+
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as T
+from torchvision.models import resnet18, ResNet18_Weights
+import numpy as np
+from PIL import Image
+import pickle
+import os
+
+IMG_SIZE = 224
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+REDUCED_DIM = 80
+
+TRANSFORM = T.Compose([
+    T.Resize((IMG_SIZE, IMG_SIZE)),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+
+class FeatureExtractor:
+    """Wraps a frozen ResNet18 and taps layer1/layer2/layer3 feature maps.
+    Returns the FULL 448-channel embedding -- reduction now happens
+    separately via per-category PCA (fit_pca / apply_pca below)."""
+
+    def __init__(self, device=DEVICE):
+        self.device = device
+        weights = ResNet18_Weights.IMAGENET1K_V1
+        net = resnet18(weights=weights)
+        net.eval()
+        for p in net.parameters():
+            p.requires_grad = False
+        self.net = net.to(device)
+
+        self._features = {}
+        net.layer1.register_forward_hook(self._hook("layer1"))
+        net.layer2.register_forward_hook(self._hook("layer2"))
+        net.layer3.register_forward_hook(self._hook("layer3"))
+
+    def _hook(self, name):
+        def fn(_module, _input, output):
+            self._features[name] = output.detach()
+        return fn
+
+    @torch.no_grad()
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.to(self.device)
+        self._features = {}
+        _ = self.net(x)
+
+        f1 = self._features["layer1"]
+        f2 = self._features["layer2"]
+        f3 = self._features["layer3"]
+
+        target_h, target_w = f1.shape[2], f1.shape[3]
+        f2_up = F.interpolate(f2, size=(target_h, target_w), mode="nearest")
+        f3_up = F.interpolate(f3, size=(target_h, target_w), mode="nearest")
+
+        embedding = torch.cat([f1, f2_up, f3_up], dim=1)  # (B, 448, 56, 56)
+        return embedding
+
+
+def load_image(path: str) -> torch.Tensor:
+    img = Image.open(path).convert("RGB")
+    return TRANSFORM(img)
+
+
+def fit_pca(embeddings: np.ndarray, n_components: int = REDUCED_DIM):
+    """embeddings: (N, C, H, W) full-dim training embeddings.
+    Fits PCA over every (image, location) sample. Returns plain numpy
+    arrays (no sklearn object saved, so loading never depends on
+    sklearn's version)."""
+    from sklearn.decomposition import PCA
+
+    n, c, h, w = embeddings.shape
+    samples = embeddings.transpose(0, 2, 3, 1).reshape(-1, c)
+
+    pca = PCA(n_components=n_components, svd_solver="randomized", random_state=1024)
+    pca.fit(samples)
+    return pca.mean_.astype(np.float32), pca.components_.astype(np.float32)
+
+
+def apply_pca(embeddings: np.ndarray, pca_mean: np.ndarray, pca_components: np.ndarray) -> np.ndarray:
+    """Projects full-dim embeddings into the reduced PCA space.
+    Accepts (N, C, H, W) or (C, H, W)."""
+    single_image = embeddings.ndim == 3
+    if single_image:
+        embeddings = embeddings[None, ...]
+
+    n, c, h, w = embeddings.shape
+    flat = embeddings.transpose(0, 2, 3, 1).reshape(-1, c)
+    reduced = (flat - pca_mean) @ pca_components.T
+    k = pca_components.shape[0]
+    reduced = reduced.reshape(n, h, w, k).transpose(0, 3, 1, 2)
+
+    return reduced[0] if single_image else reduced
+
+
+def fit_gaussian(embeddings: np.ndarray, eps: float = 0.01):
+    n, c, h, w = embeddings.shape
+    embeddings = embeddings.reshape(n, c, h * w)
+
+    mean = np.mean(embeddings, axis=0)
+
+    inv_covariance = np.zeros((h * w, c, c), dtype=np.float32)
+    identity = np.identity(c) * eps
+
+    for loc in range(h * w):
+        patch = embeddings[:, :, loc]
+        cov = np.cov(patch, rowvar=False) + identity
+        inv_covariance[loc] = np.linalg.inv(cov)
+
+    return mean, inv_covariance, (h, w)
+
+
+def mahalanobis_score_map(embedding: np.ndarray, mean: np.ndarray, inv_cov: np.ndarray, hw):
+    h, w = hw
+    c = embedding.shape[0]
+    embedding = embedding.reshape(c, h * w)
+
+    dist_map = np.zeros(h * w, dtype=np.float32)
+    for loc in range(h * w):
+        delta = embedding[:, loc] - mean[:, loc]
+        dist_map[loc] = np.sqrt(delta @ inv_cov[loc] @ delta)
+
+    return dist_map.reshape(h, w)
+
+
+def save_stats(path: str, mean, inv_cov, hw, pca_mean, pca_components):
+    with open(path, "wb") as f:
+        pickle.dump(
+            {"mean": mean, "inv_cov": inv_cov, "hw": hw,
+             "pca_mean": pca_mean, "pca_components": pca_components},
+            f, protocol=pickle.HIGHEST_PROTOCOL,
+        )
+
+
+def load_stats(path: str):
+    with open(path, "rb") as f:
+        d = pickle.load(f)
+    return d["mean"], d["inv_cov"], d["hw"], d["pca_mean"], d["pca_components"]
