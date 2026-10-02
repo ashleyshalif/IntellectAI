@@ -72,12 +72,6 @@ st.markdown("""
         animation: titleIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
     }
     .main-title::before { content: "> "; -webkit-text-fill-color: var(--accent); color: var(--accent); }
-    .main-title::after {
-        content: ""; display: inline-block; width: clamp(14px, 1.4vw, 24px); height: clamp(40px, 6vw, 64px);
-        background: var(--accent); margin-left: 14px; vertical-align: -0.16em;
-        animation: blink 1s steps(1) infinite;
-        box-shadow: 0 0 14px rgba(79,195,247,0.6);
-    }
     @keyframes blink { 50% { opacity: 0; } }
     @keyframes titleIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 
