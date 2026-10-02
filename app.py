@@ -37,15 +37,23 @@ st.markdown("""
         --accent-dim: #2e5b6b;
         --accent-warn: #ff5470;
         --accent-mid: #ffb84d;
+        --text-primary: #e8f2f7;
         --text-dim: #a3c8db;
     }
     .stApp {
+        color-scheme: dark;
         background-color: var(--bg-deep);
         background-image:
             linear-gradient(var(--grid-line) 1px, transparent 1px),
             linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
         background-size: 24px 24px;
         animation: gridDrift 50s linear infinite;
+    }
+    .stApp [data-testid="stMarkdownContainer"] p:not(.main-title):not(.subtitle),
+    .stApp [data-testid="stWidgetLabel"] p,
+    .stApp [data-testid="stWidgetLabel"] label,
+    .stApp [data-testid="stCaptionContainer"] {
+        color: var(--text-primary) !important;
     }
     @keyframes gridDrift {
         from { background-position: 0 0, 0 0; }
